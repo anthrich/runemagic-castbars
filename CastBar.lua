@@ -1,58 +1,141 @@
 ----------------------------------------------------------------------
 -- RuneMagic Castbars - CastBar
--- Creates and manages individual castbar frames.
+-- Rune-shaped castbar: strokes are revealed left-to-right as cast
+-- progresses, forming a Dwarven glyph.
 ----------------------------------------------------------------------
 
 local AddonName, NS = ...
 
-----------------------------------------------------------------------
--- Forward declarations
-----------------------------------------------------------------------
 local OnUpdate, OnEvent, StartCast, StartChannel, StopCast, FinishCast
-local InterruptCast, UpdateBarVisuals
+local InterruptCast, BuildRuneStrokes, SetStrokeColor, RevealStrokes
+
+----------------------------------------------------------------------
+-- BuildRuneStrokes(bar) - create texture lines for the chosen rune
+----------------------------------------------------------------------
+BuildRuneStrokes = function(bar)
+    -- Clean up old strokes
+    if bar.strokes then
+        for _, s in ipairs(bar.strokes) do
+            s.tex:Hide()
+            s.tex:SetParent(nil)
+        end
+    end
+    bar.strokes = {}
+
+    local runeIndex = bar.cfg.runeIndex or NS.defaultRuneIndex
+    local rune = NS.RuneShapes[runeIndex]
+    if not rune then return end
+
+    local w, h = bar.cfg.width, bar.cfg.height
+
+    for i, stroke in ipairs(rune) do
+        local tex = bar.canvas:CreateTexture(nil, "ARTWORK")
+        tex:SetColorTexture(1, 1, 1, 1)
+
+        -- Convert normalized coords to pixel positions
+        local px1 = stroke.x1 * w
+        local py1 = (1 - stroke.y1) * h  -- flip y: 0=top in WoW
+        local px2 = stroke.x2 * w
+        local py2 = (1 - stroke.y2) * h
+
+        local dx = px2 - px1
+        local dy = py2 - py1
+        local len = math.sqrt(dx * dx + dy * dy)
+        local thick = stroke.thickness or 3
+
+        if len < 1 then len = 1 end
+
+        -- WoW textures are axis-aligned rectangles, so we approximate
+        -- angled strokes with a rotated texture via SetRotation.
+        local angle = math.atan2(dy, dx)
+
+        tex:SetSize(len, thick)
+        -- Anchor at midpoint of the stroke
+        local mx = (px1 + px2) / 2
+        local my = (py1 + py2) / 2
+        tex:SetPoint("CENTER", bar.canvas, "BOTTOMLEFT", mx, my)
+        tex:SetRotation(-angle)
+        tex:Hide()
+
+        -- revealX = leftmost x coord, used to decide when to show
+        local revealX = math.min(stroke.x1, stroke.x2)
+
+        bar.strokes[i] = {
+            tex = tex,
+            revealX = revealX,
+            visible = false,
+        }
+    end
+end
+
+----------------------------------------------------------------------
+-- SetStrokeColor(bar, r, g, b, a) - recolor all strokes
+----------------------------------------------------------------------
+SetStrokeColor = function(bar, r, g, b, a)
+    if not bar.strokes then return end
+    for _, s in ipairs(bar.strokes) do
+        s.tex:SetColorTexture(r, g, b, a or 1)
+    end
+end
+
+----------------------------------------------------------------------
+-- RevealStrokes(bar, progress) - show strokes up to progress (0-1)
+----------------------------------------------------------------------
+RevealStrokes = function(bar, progress)
+    if not bar.strokes then return end
+    for _, s in ipairs(bar.strokes) do
+        if s.revealX <= progress then
+            if not s.visible then
+                s.tex:Show()
+                s.visible = true
+            end
+        else
+            if s.visible then
+                s.tex:Hide()
+                s.visible = false
+            end
+        end
+    end
+end
+
+----------------------------------------------------------------------
+-- HideAllStrokes(bar)
+----------------------------------------------------------------------
+local function HideAllStrokes(bar)
+    if not bar.strokes then return end
+    for _, s in ipairs(bar.strokes) do
+        s.tex:Hide()
+        s.visible = false
+    end
+end
 
 ----------------------------------------------------------------------
 -- CreateCastBar(unit, cfg) -> frame
--- Builds a movable castbar frame for the given unit ("player"/"target").
 ----------------------------------------------------------------------
 function NS.CreateCastBar(unit, cfg)
-    local bar = CreateFrame("StatusBar", "RuneMagicCastbar_" .. unit, UIParent)
+    local bar = CreateFrame("Frame", "RuneMagicCastbar_" .. unit, UIParent)
     bar.unit = unit
     bar.cfg = cfg
     bar.casting = false
     bar.channeling = false
     bar.holdTime = 0
 
-    -- Background texture (Classic: SetBackdrop is a native frame method)
+    bar:SetSize(cfg.width, cfg.height)
+    bar:SetPoint(cfg.point, UIParent, cfg.point, cfg.x, cfg.y)
+
+    -- Dim background
     bar.bg = bar:CreateTexture(nil, "BACKGROUND")
     bar.bg:SetAllPoints()
-    bar.bg:SetColorTexture(0, 0, 0, cfg.bgColor.a)
+    bar.bg:SetColorTexture(
+        cfg.bgColor.r, cfg.bgColor.g, cfg.bgColor.b, cfg.bgColor.a
+    )
 
-    -- Status bar texture
-    bar:SetStatusBarTexture(cfg.texture)
-    bar:SetMinMaxValues(0, 1)
-    bar:SetValue(0)
+    -- Canvas for rune strokes (child frame so strokes layer properly)
+    bar.canvas = CreateFrame("Frame", nil, bar)
+    bar.canvas:SetAllPoints()
 
-    -- Apply size, position, colors
-    NS.ApplySettings(bar, cfg)
-
-    -- Border textures (1px edges)
-    local borderSize = 1
-    local function CreateBorder(point1, relPoint1, x1, y1, point2, relPoint2, x2, y2)
-        local tex = bar:CreateTexture(nil, "OVERLAY")
-        tex:SetColorTexture(0, 0, 0, 0.8)
-        tex:SetPoint(point1, bar, relPoint1, x1, y1)
-        tex:SetPoint(point2, bar, relPoint2, x2, y2)
-        return tex
-    end
-    bar.borderTop = CreateBorder("BOTTOMLEFT", "TOPLEFT", -borderSize, borderSize, "BOTTOMRIGHT", "TOPRIGHT", borderSize, borderSize)
-    bar.borderTop:SetHeight(borderSize)
-    bar.borderBottom = CreateBorder("TOPLEFT", "BOTTOMLEFT", -borderSize, -borderSize, "TOPRIGHT", "BOTTOMRIGHT", borderSize, -borderSize)
-    bar.borderBottom:SetHeight(borderSize)
-    bar.borderLeft = CreateBorder("TOPRIGHT", "TOPLEFT", -borderSize, borderSize, "BOTTOMRIGHT", "BOTTOMLEFT", -borderSize, -borderSize)
-    bar.borderLeft:SetWidth(borderSize)
-    bar.borderRight = CreateBorder("TOPLEFT", "TOPRIGHT", borderSize, borderSize, "BOTTOMLEFT", "BOTTOMRIGHT", borderSize, -borderSize)
-    bar.borderRight:SetWidth(borderSize)
+    -- Build rune stroke textures
+    BuildRuneStrokes(bar)
 
     -- Spell name text
     bar.text = bar:CreateFontString(nil, "OVERLAY")
@@ -68,13 +151,6 @@ function NS.CreateCastBar(unit, cfg)
     bar.timer:SetJustifyH("RIGHT")
     bar.timer:SetTextColor(1, 1, 1, 1)
     if not cfg.showTimer then bar.timer:Hide() end
-
-    -- Spark (glow on leading edge)
-    bar.spark = bar:CreateTexture(nil, "OVERLAY")
-    bar.spark:SetTexture("Interface\\CastingBar\\UI-CastingBar-Spark")
-    bar.spark:SetSize(20, cfg.height * 2.5)
-    bar.spark:SetBlendMode("ADD")
-    if not cfg.showSpark then bar.spark:Hide() end
 
     -- Spell icon
     bar.icon = bar:CreateTexture(nil, "OVERLAY")
@@ -125,7 +201,7 @@ function NS.CreateCastBar(unit, cfg)
 end
 
 ----------------------------------------------------------------------
--- ApplySettings(bar, cfg) - resize / reposition / recolor a bar
+-- ApplySettings
 ----------------------------------------------------------------------
 function NS.ApplySettings(bar, cfg)
     bar.cfg = cfg
@@ -139,18 +215,18 @@ function NS.ApplySettings(bar, cfg)
         )
     end
 
-    bar:SetStatusBarColor(cfg.barColor.r, cfg.barColor.g, cfg.barColor.b, cfg.barColor.a)
+    BuildRuneStrokes(bar)
 end
 
 ----------------------------------------------------------------------
--- SetLock(locked) - enable / disable dragging on all bars
+-- SetLock
 ----------------------------------------------------------------------
 function NS.SetLock(locked)
-    -- Nothing extra needed; drag handlers already check NS.db.locked
+    -- Drag handlers already check NS.db.locked
 end
 
 ----------------------------------------------------------------------
--- TestCastBar(bar) - show a fake 3-second cast for previewing
+-- TestCastBar
 ----------------------------------------------------------------------
 function NS.TestCastBar(bar)
     if not bar then return end
@@ -164,9 +240,8 @@ function NS.TestCastBar(bar)
     bar.icon:SetTexture("Interface\\Icons\\Spell_Nature_Healing")
 
     local c = bar.cfg.barColor
-    bar:SetStatusBarColor(c.r, c.g, c.b, c.a)
-    bar:SetMinMaxValues(0, 1)
-    bar:SetValue(0)
+    SetStrokeColor(bar, c.r, c.g, c.b, c.a)
+    HideAllStrokes(bar)
     bar:SetAlpha(1)
     bar:Show()
 end
@@ -178,7 +253,6 @@ OnEvent = function(self, event, ...)
     local unit = select(1, ...)
 
     if event == "PLAYER_TARGET_CHANGED" then
-        -- Re-check target cast on target switch
         StartCast(self)
         if not self.casting then
             StartChannel(self)
@@ -189,7 +263,6 @@ OnEvent = function(self, event, ...)
         return
     end
 
-    -- Only handle events for our unit
     if unit ~= self.unit then return end
 
     if event == "UNIT_SPELLCAST_START" then
@@ -210,11 +283,10 @@ OnEvent = function(self, event, ...)
 end
 
 ----------------------------------------------------------------------
--- StartCast - begin showing a normal cast
+-- StartCast
 ----------------------------------------------------------------------
 StartCast = function(bar)
-    local name, _, texture, startTimeMS, endTimeMS, _, _, notInterruptible =
-        UnitCastingInfo(bar.unit)
+    local name, _, texture, startTimeMS, endTimeMS = UnitCastingInfo(bar.unit)
 
     if not name then
         bar.casting = false
@@ -226,27 +298,22 @@ StartCast = function(bar)
     bar.startTime = startTimeMS / 1000
     bar.endTime = endTimeMS / 1000
     bar.holdTime = 0
-    bar.notInterruptible = notInterruptible
 
     bar.text:SetText(name)
-    if texture then
-        bar.icon:SetTexture(texture)
-    end
+    if texture then bar.icon:SetTexture(texture) end
 
     local c = bar.cfg.barColor
-    bar:SetStatusBarColor(c.r, c.g, c.b, c.a)
-    bar:SetMinMaxValues(0, 1)
-    bar:SetValue(0)
+    SetStrokeColor(bar, c.r, c.g, c.b, c.a)
+    HideAllStrokes(bar)
     bar:SetAlpha(1)
     bar:Show()
 end
 
 ----------------------------------------------------------------------
--- StartChannel - begin showing a channeled cast
+-- StartChannel
 ----------------------------------------------------------------------
 StartChannel = function(bar)
-    local name, _, texture, startTimeMS, endTimeMS, _, notInterruptible, spellID =
-        UnitChannelInfo(bar.unit)
+    local name, _, texture, startTimeMS, endTimeMS = UnitChannelInfo(bar.unit)
 
     if not name then
         bar.channeling = false
@@ -258,23 +325,19 @@ StartChannel = function(bar)
     bar.startTime = startTimeMS / 1000
     bar.endTime = endTimeMS / 1000
     bar.holdTime = 0
-    bar.notInterruptible = notInterruptible
 
     bar.text:SetText(name)
-    if texture then
-        bar.icon:SetTexture(texture)
-    end
+    if texture then bar.icon:SetTexture(texture) end
 
     local c = bar.cfg.barColor
-    bar:SetStatusBarColor(c.r, c.g, c.b, c.a)
-    bar:SetMinMaxValues(0, 1)
-    bar:SetValue(1)
+    SetStrokeColor(bar, c.r, c.g, c.b, c.a)
+    RevealStrokes(bar, 1)  -- channels start full
     bar:SetAlpha(1)
     bar:Show()
 end
 
 ----------------------------------------------------------------------
--- StopCast - hide after a brief hold
+-- StopCast
 ----------------------------------------------------------------------
 StopCast = function(bar)
     bar.casting = false
@@ -283,42 +346,41 @@ StopCast = function(bar)
 end
 
 ----------------------------------------------------------------------
--- FinishCast - flash and fade on successful cast
+-- FinishCast - flash green
 ----------------------------------------------------------------------
 FinishCast = function(bar)
     bar.casting = false
-    bar:SetValue(1)
-    bar:SetStatusBarColor(0.0, 1.0, 0.0, 1.0)
+    RevealStrokes(bar, 1)
+    SetStrokeColor(bar, 0.0, 1.0, 0.0, 1.0)
     bar.holdTime = GetTime() + 0.5
-    if bar.spark then bar.spark:Hide() end
 end
 
 ----------------------------------------------------------------------
--- InterruptCast - show red bar briefly
+-- InterruptCast - flash red
 ----------------------------------------------------------------------
 InterruptCast = function(bar)
     bar.casting = false
     bar.channeling = false
 
     local c = bar.cfg.interruptedColor
-    bar:SetStatusBarColor(c.r, c.g, c.b, c.a)
-    bar:SetValue(1)
+    SetStrokeColor(bar, c.r, c.g, c.b, c.a)
+    RevealStrokes(bar, 1)
     bar.text:SetText("Interrupted")
     bar.holdTime = GetTime() + 0.8
-    if bar.spark then bar.spark:Hide() end
 end
 
 ----------------------------------------------------------------------
--- OnUpdate - animate the bar each frame
+-- OnUpdate - reveal strokes based on cast progress
 ----------------------------------------------------------------------
 OnUpdate = function(bar, elapsed)
     local now = GetTime()
 
-    -- Fade out after holdTime expires
+    -- Hold phase: wait then hide
     if bar.holdTime > 0 and not bar.casting and not bar.channeling then
         if now >= bar.holdTime then
             bar:Hide()
             bar.holdTime = 0
+            HideAllStrokes(bar)
         end
         return
     end
@@ -329,23 +391,14 @@ OnUpdate = function(bar, elapsed)
         local progress = (now - bar.startTime) / duration
 
         if progress >= 1 then
-            bar:SetValue(1)
             FinishCast(bar)
             return
         end
 
-        bar:SetValue(progress)
+        RevealStrokes(bar, progress)
 
-        -- Update spark position
-        if bar.spark and bar.cfg.showSpark then
-            bar.spark:Show()
-            bar.spark:SetPoint("CENTER", bar, "LEFT", progress * bar.cfg.width, 0)
-        end
-
-        -- Update timer
         if bar.cfg.showTimer then
-            local remaining = bar.endTime - now
-            bar.timer:SetFormattedText("%.1f", remaining)
+            bar.timer:SetFormattedText("%.1f", bar.endTime - now)
         end
 
     elseif bar.channeling then
@@ -358,18 +411,10 @@ OnUpdate = function(bar, elapsed)
             return
         end
 
-        bar:SetValue(progress)
+        RevealStrokes(bar, progress)
 
-        -- Update spark position
-        if bar.spark and bar.cfg.showSpark then
-            bar.spark:Show()
-            bar.spark:SetPoint("CENTER", bar, "LEFT", progress * bar.cfg.width, 0)
-        end
-
-        -- Update timer
         if bar.cfg.showTimer then
-            local remaining = bar.endTime - now
-            bar.timer:SetFormattedText("%.1f", remaining)
+            bar.timer:SetFormattedText("%.1f", bar.endTime - now)
         end
     end
 end

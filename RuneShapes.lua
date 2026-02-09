@@ -14,4 +14,5 @@ NS.RuneShapes = {
     [4] = { name = "Algiz",    texture = MEDIA .. "Rune_Algiz" },
 }
 
+NS.stoneBgTexture = MEDIA .. "StoneBg"
 NS.defaultRuneIndex = 3

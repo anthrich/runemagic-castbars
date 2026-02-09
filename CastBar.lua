@@ -44,12 +44,14 @@ function NS.CreateCastBar(unit, cfg)
     bar:SetSize(cfg.width, cfg.height)
     bar:SetPoint(cfg.point, UIParent, cfg.point, cfg.x, cfg.y)
 
-    -- Dim background
+    -- Stone background
     bar.bg = bar:CreateTexture(nil, "BACKGROUND")
     bar.bg:SetAllPoints()
-    bar.bg:SetColorTexture(
-        cfg.bgColor.r, cfg.bgColor.g, cfg.bgColor.b, cfg.bgColor.a
-    )
+    if NS.stoneBgTexture then
+        bar.bg:SetTexture(NS.stoneBgTexture)
+    else
+        bar.bg:SetColorTexture(0.12, 0.12, 0.12, 0.9)
+    end
 
     -- Rune glyph texture (anchored left, width controlled by progress)
     bar.rune = bar:CreateTexture(nil, "ARTWORK")
@@ -137,10 +139,8 @@ function NS.ApplySettings(bar, cfg)
     bar:ClearAllPoints()
     bar:SetPoint(cfg.point, UIParent, cfg.point, cfg.x, cfg.y)
 
-    if bar.bg then
-        bar.bg:SetColorTexture(
-            cfg.bgColor.r, cfg.bgColor.g, cfg.bgColor.b, cfg.bgColor.a
-        )
+    if bar.bg and NS.stoneBgTexture then
+        bar.bg:SetTexture(NS.stoneBgTexture)
     end
 
     -- Update rune texture if index changed

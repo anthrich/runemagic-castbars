@@ -1,0 +1,10 @@
+## Interface: 110100
+## Title: RuneMagic Castbars
+## Notes: A clean, customizable castbar replacement.
+## Author: RuneMagic
+## Version: 1.0.0
+## SavedVariables: RuneMagicCastbarsDB
+
+Core.lua
+CastBar.lua
+Config.lua

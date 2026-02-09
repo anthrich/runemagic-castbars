@@ -1,112 +1,33 @@
 ----------------------------------------------------------------------
 -- RuneMagic Castbars - CastBar
--- Rune-shaped castbar: strokes are revealed left-to-right as cast
--- progresses, forming a Dwarven glyph.
+-- Rune-shaped castbar using TGA textures. Cast progress is shown
+-- by cropping the texture left-to-right via SetTexCoord.
 ----------------------------------------------------------------------
 
 local AddonName, NS = ...
 
 local OnUpdate, OnEvent, StartCast, StartChannel, StopCast, FinishCast
-local InterruptCast, BuildRuneStrokes, SetStrokeColor, RevealStrokes
+local InterruptCast, SetRuneProgress, SetRuneColor
 
 ----------------------------------------------------------------------
--- BuildRuneStrokes(bar) - create texture lines for the chosen rune
+-- SetRuneProgress(bar, progress) - reveal rune from 0 to progress
+-- For a normal cast progress goes 0 -> 1 (left to right).
+-- For a channel progress goes 1 -> 0 (right to left disappearing).
 ----------------------------------------------------------------------
-BuildRuneStrokes = function(bar)
-    -- Clean up old strokes
-    if bar.strokes then
-        for _, s in ipairs(bar.strokes) do
-            s.tex:Hide()
-            s.tex:SetParent(nil)
-        end
-    end
-    bar.strokes = {}
+SetRuneProgress = function(bar, progress)
+    if progress < 0 then progress = 0 end
+    if progress > 1 then progress = 1 end
 
-    local runeIndex = bar.cfg.runeIndex or NS.defaultRuneIndex
-    local rune = NS.RuneShapes[runeIndex]
-    if not rune then return end
-
-    local w, h = bar.cfg.width, bar.cfg.height
-
-    for i, stroke in ipairs(rune) do
-        local tex = bar.canvas:CreateTexture(nil, "ARTWORK")
-        tex:SetColorTexture(1, 1, 1, 1)
-
-        -- Convert normalized coords to pixel positions
-        local px1 = stroke.x1 * w
-        local py1 = (1 - stroke.y1) * h  -- flip y: 0=top in WoW
-        local px2 = stroke.x2 * w
-        local py2 = (1 - stroke.y2) * h
-
-        local dx = px2 - px1
-        local dy = py2 - py1
-        local len = math.sqrt(dx * dx + dy * dy)
-        local thick = stroke.thickness or 3
-
-        if len < 1 then len = 1 end
-
-        -- WoW textures are axis-aligned rectangles, so we approximate
-        -- angled strokes with a rotated texture via SetRotation.
-        local angle = math.atan2(dy, dx)
-
-        tex:SetSize(len, thick)
-        -- Anchor at midpoint of the stroke
-        local mx = (px1 + px2) / 2
-        local my = (py1 + py2) / 2
-        tex:SetPoint("CENTER", bar.canvas, "BOTTOMLEFT", mx, my)
-        tex:SetRotation(-angle)
-        tex:Hide()
-
-        -- revealX = leftmost x coord, used to decide when to show
-        local revealX = math.min(stroke.x1, stroke.x2)
-
-        bar.strokes[i] = {
-            tex = tex,
-            revealX = revealX,
-            visible = false,
-        }
-    end
+    -- Crop the texture to show only the left 'progress' portion
+    bar.rune:SetTexCoord(0, progress, 0, 1)
+    bar.rune:SetWidth(bar.cfg.width * progress)
 end
 
 ----------------------------------------------------------------------
--- SetStrokeColor(bar, r, g, b, a) - recolor all strokes
+-- SetRuneColor(bar, r, g, b, a)
 ----------------------------------------------------------------------
-SetStrokeColor = function(bar, r, g, b, a)
-    if not bar.strokes then return end
-    for _, s in ipairs(bar.strokes) do
-        s.tex:SetColorTexture(r, g, b, a or 1)
-    end
-end
-
-----------------------------------------------------------------------
--- RevealStrokes(bar, progress) - show strokes up to progress (0-1)
-----------------------------------------------------------------------
-RevealStrokes = function(bar, progress)
-    if not bar.strokes then return end
-    for _, s in ipairs(bar.strokes) do
-        if s.revealX <= progress then
-            if not s.visible then
-                s.tex:Show()
-                s.visible = true
-            end
-        else
-            if s.visible then
-                s.tex:Hide()
-                s.visible = false
-            end
-        end
-    end
-end
-
-----------------------------------------------------------------------
--- HideAllStrokes(bar)
-----------------------------------------------------------------------
-local function HideAllStrokes(bar)
-    if not bar.strokes then return end
-    for _, s in ipairs(bar.strokes) do
-        s.tex:Hide()
-        s.visible = false
-    end
+SetRuneColor = function(bar, r, g, b, a)
+    bar.rune:SetVertexColor(r, g, b, a or 1)
 end
 
 ----------------------------------------------------------------------
@@ -130,12 +51,19 @@ function NS.CreateCastBar(unit, cfg)
         cfg.bgColor.r, cfg.bgColor.g, cfg.bgColor.b, cfg.bgColor.a
     )
 
-    -- Canvas for rune strokes (child frame so strokes layer properly)
-    bar.canvas = CreateFrame("Frame", nil, bar)
-    bar.canvas:SetAllPoints()
+    -- Rune glyph texture (anchored left, width controlled by progress)
+    bar.rune = bar:CreateTexture(nil, "ARTWORK")
+    bar.rune:SetPoint("LEFT", bar, "LEFT", 0, 0)
+    bar.rune:SetSize(cfg.width, cfg.height)
 
-    -- Build rune stroke textures
-    BuildRuneStrokes(bar)
+    -- Load the rune texture
+    local runeIndex = cfg.runeIndex or NS.defaultRuneIndex
+    local runeData = NS.RuneShapes[runeIndex]
+    if runeData then
+        bar.rune:SetTexture(runeData.texture)
+    end
+    bar.rune:SetTexCoord(0, 0, 0, 1)  -- start hidden
+    bar.rune:SetWidth(0)
 
     -- Spell name text
     bar.text = bar:CreateFontString(nil, "OVERLAY")
@@ -215,7 +143,13 @@ function NS.ApplySettings(bar, cfg)
         )
     end
 
-    BuildRuneStrokes(bar)
+    -- Update rune texture if index changed
+    local runeIndex = cfg.runeIndex or NS.defaultRuneIndex
+    local runeData = NS.RuneShapes[runeIndex]
+    if runeData and bar.rune then
+        bar.rune:SetTexture(runeData.texture)
+        bar.rune:SetSize(cfg.width, cfg.height)
+    end
 end
 
 ----------------------------------------------------------------------
@@ -240,8 +174,8 @@ function NS.TestCastBar(bar)
     bar.icon:SetTexture("Interface\\Icons\\Spell_Nature_Healing")
 
     local c = bar.cfg.barColor
-    SetStrokeColor(bar, c.r, c.g, c.b, c.a)
-    HideAllStrokes(bar)
+    SetRuneColor(bar, c.r, c.g, c.b, c.a)
+    SetRuneProgress(bar, 0)
     bar:SetAlpha(1)
     bar:Show()
 end
@@ -303,8 +237,8 @@ StartCast = function(bar)
     if texture then bar.icon:SetTexture(texture) end
 
     local c = bar.cfg.barColor
-    SetStrokeColor(bar, c.r, c.g, c.b, c.a)
-    HideAllStrokes(bar)
+    SetRuneColor(bar, c.r, c.g, c.b, c.a)
+    SetRuneProgress(bar, 0)
     bar:SetAlpha(1)
     bar:Show()
 end
@@ -330,8 +264,8 @@ StartChannel = function(bar)
     if texture then bar.icon:SetTexture(texture) end
 
     local c = bar.cfg.barColor
-    SetStrokeColor(bar, c.r, c.g, c.b, c.a)
-    RevealStrokes(bar, 1)  -- channels start full
+    SetRuneColor(bar, c.r, c.g, c.b, c.a)
+    SetRuneProgress(bar, 1)
     bar:SetAlpha(1)
     bar:Show()
 end
@@ -350,8 +284,8 @@ end
 ----------------------------------------------------------------------
 FinishCast = function(bar)
     bar.casting = false
-    RevealStrokes(bar, 1)
-    SetStrokeColor(bar, 0.0, 1.0, 0.0, 1.0)
+    SetRuneProgress(bar, 1)
+    SetRuneColor(bar, 0.0, 1.0, 0.0, 1.0)
     bar.holdTime = GetTime() + 0.5
 end
 
@@ -363,14 +297,14 @@ InterruptCast = function(bar)
     bar.channeling = false
 
     local c = bar.cfg.interruptedColor
-    SetStrokeColor(bar, c.r, c.g, c.b, c.a)
-    RevealStrokes(bar, 1)
+    SetRuneColor(bar, c.r, c.g, c.b, c.a)
+    SetRuneProgress(bar, 1)
     bar.text:SetText("Interrupted")
     bar.holdTime = GetTime() + 0.8
 end
 
 ----------------------------------------------------------------------
--- OnUpdate - reveal strokes based on cast progress
+-- OnUpdate - animate rune reveal based on cast progress
 ----------------------------------------------------------------------
 OnUpdate = function(bar, elapsed)
     local now = GetTime()
@@ -380,7 +314,6 @@ OnUpdate = function(bar, elapsed)
         if now >= bar.holdTime then
             bar:Hide()
             bar.holdTime = 0
-            HideAllStrokes(bar)
         end
         return
     end
@@ -395,7 +328,7 @@ OnUpdate = function(bar, elapsed)
             return
         end
 
-        RevealStrokes(bar, progress)
+        SetRuneProgress(bar, progress)
 
         if bar.cfg.showTimer then
             bar.timer:SetFormattedText("%.1f", bar.endTime - now)
@@ -411,7 +344,7 @@ OnUpdate = function(bar, elapsed)
             return
         end
 
-        RevealStrokes(bar, progress)
+        SetRuneProgress(bar, progress)
 
         if bar.cfg.showTimer then
             bar.timer:SetFormattedText("%.1f", bar.endTime - now)

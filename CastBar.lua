@@ -16,19 +16,17 @@ local InterruptCast, UpdateBarVisuals
 -- Builds a movable castbar frame for the given unit ("player"/"target").
 ----------------------------------------------------------------------
 function NS.CreateCastBar(unit, cfg)
-    local bar = CreateFrame("StatusBar", "RuneMagicCastbar_" .. unit, UIParent, "BackdropTemplate")
+    local bar = CreateFrame("StatusBar", "RuneMagicCastbar_" .. unit, UIParent)
     bar.unit = unit
     bar.cfg = cfg
     bar.casting = false
     bar.channeling = false
     bar.holdTime = 0
 
-    -- Backdrop (background)
-    bar:SetBackdrop({
-        bgFile = "Interface\\Buttons\\WHITE8x8",
-        edgeFile = "Interface\\Buttons\\WHITE8x8",
-        edgeSize = 1,
-    })
+    -- Background texture (Classic: SetBackdrop is a native frame method)
+    bar.bg = bar:CreateTexture(nil, "BACKGROUND")
+    bar.bg:SetAllPoints()
+    bar.bg:SetColorTexture(0, 0, 0, cfg.bgColor.a)
 
     -- Status bar texture
     bar:SetStatusBarTexture(cfg.texture)
@@ -38,10 +36,23 @@ function NS.CreateCastBar(unit, cfg)
     -- Apply size, position, colors
     NS.ApplySettings(bar, cfg)
 
-    -- Border frame (renders on top)
-    bar.border = CreateFrame("Frame", nil, bar, "BackdropTemplate")
-    bar.border:SetAllPoints()
-    bar.border:SetFrameLevel(bar:GetFrameLevel() + 2)
+    -- Border textures (1px edges)
+    local borderSize = 1
+    local function CreateBorder(point1, relPoint1, x1, y1, point2, relPoint2, x2, y2)
+        local tex = bar:CreateTexture(nil, "OVERLAY")
+        tex:SetColorTexture(0, 0, 0, 0.8)
+        tex:SetPoint(point1, bar, relPoint1, x1, y1)
+        tex:SetPoint(point2, bar, relPoint2, x2, y2)
+        return tex
+    end
+    bar.borderTop = CreateBorder("BOTTOMLEFT", "TOPLEFT", -borderSize, borderSize, "BOTTOMRIGHT", "TOPRIGHT", borderSize, borderSize)
+    bar.borderTop:SetHeight(borderSize)
+    bar.borderBottom = CreateBorder("TOPLEFT", "BOTTOMLEFT", -borderSize, -borderSize, "TOPRIGHT", "BOTTOMRIGHT", borderSize, -borderSize)
+    bar.borderBottom:SetHeight(borderSize)
+    bar.borderLeft = CreateBorder("TOPRIGHT", "TOPLEFT", -borderSize, borderSize, "BOTTOMRIGHT", "BOTTOMLEFT", -borderSize, -borderSize)
+    bar.borderLeft:SetWidth(borderSize)
+    bar.borderRight = CreateBorder("TOPLEFT", "TOPRIGHT", borderSize, borderSize, "BOTTOMLEFT", "BOTTOMRIGHT", borderSize, -borderSize)
+    bar.borderRight:SetWidth(borderSize)
 
     -- Spell name text
     bar.text = bar:CreateFontString(nil, "OVERLAY")
@@ -92,28 +103,20 @@ function NS.CreateCastBar(unit, cfg)
     bar:SetScript("OnUpdate", OnUpdate)
     bar:SetScript("OnEvent", OnEvent)
 
-    if unit == "player" then
-        bar:RegisterEvent("UNIT_SPELLCAST_START")
-        bar:RegisterEvent("UNIT_SPELLCAST_STOP")
-        bar:RegisterEvent("UNIT_SPELLCAST_FAILED")
-        bar:RegisterEvent("UNIT_SPELLCAST_INTERRUPTED")
-        bar:RegisterEvent("UNIT_SPELLCAST_SUCCEEDED")
-        bar:RegisterEvent("UNIT_SPELLCAST_CHANNEL_START")
-        bar:RegisterEvent("UNIT_SPELLCAST_CHANNEL_STOP")
-        bar:RegisterEvent("UNIT_SPELLCAST_CHANNEL_UPDATE")
-        bar:RegisterEvent("UNIT_SPELLCAST_INTERRUPTIBLE")
-        bar:RegisterEvent("UNIT_SPELLCAST_NOT_INTERRUPTIBLE")
-    elseif unit == "target" then
-        bar:RegisterEvent("UNIT_SPELLCAST_START")
-        bar:RegisterEvent("UNIT_SPELLCAST_STOP")
-        bar:RegisterEvent("UNIT_SPELLCAST_FAILED")
-        bar:RegisterEvent("UNIT_SPELLCAST_INTERRUPTED")
-        bar:RegisterEvent("UNIT_SPELLCAST_SUCCEEDED")
-        bar:RegisterEvent("UNIT_SPELLCAST_CHANNEL_START")
-        bar:RegisterEvent("UNIT_SPELLCAST_CHANNEL_STOP")
-        bar:RegisterEvent("UNIT_SPELLCAST_CHANNEL_UPDATE")
-        bar:RegisterEvent("UNIT_SPELLCAST_INTERRUPTIBLE")
-        bar:RegisterEvent("UNIT_SPELLCAST_NOT_INTERRUPTIBLE")
+    local castEvents = {
+        "UNIT_SPELLCAST_START",
+        "UNIT_SPELLCAST_STOP",
+        "UNIT_SPELLCAST_FAILED",
+        "UNIT_SPELLCAST_INTERRUPTED",
+        "UNIT_SPELLCAST_SUCCEEDED",
+        "UNIT_SPELLCAST_CHANNEL_START",
+        "UNIT_SPELLCAST_CHANNEL_STOP",
+        "UNIT_SPELLCAST_CHANNEL_UPDATE",
+    }
+    for _, ev in ipairs(castEvents) do
+        bar:RegisterEvent(ev)
+    end
+    if unit == "target" then
         bar:RegisterEvent("PLAYER_TARGET_CHANGED")
     end
 
@@ -130,8 +133,11 @@ function NS.ApplySettings(bar, cfg)
     bar:ClearAllPoints()
     bar:SetPoint(cfg.point, UIParent, cfg.point, cfg.x, cfg.y)
 
-    bar:SetBackdropColor(cfg.bgColor.r, cfg.bgColor.g, cfg.bgColor.b, cfg.bgColor.a)
-    bar:SetBackdropBorderColor(0, 0, 0, 0.8)
+    if bar.bg then
+        bar.bg:SetColorTexture(
+            cfg.bgColor.r, cfg.bgColor.g, cfg.bgColor.b, cfg.bgColor.a
+        )
+    end
 
     bar:SetStatusBarColor(cfg.barColor.r, cfg.barColor.g, cfg.barColor.b, cfg.barColor.a)
 end
@@ -200,14 +206,6 @@ OnEvent = function(self, event, ...)
         InterruptCast(self)
     elseif event == "UNIT_SPELLCAST_CHANNEL_UPDATE" then
         StartChannel(self)
-    elseif event == "UNIT_SPELLCAST_NOT_INTERRUPTIBLE" then
-        if self.channeling or self.casting then
-            bar.notInterruptible = true
-        end
-    elseif event == "UNIT_SPELLCAST_INTERRUPTIBLE" then
-        if self.channeling or self.casting then
-            bar.notInterruptible = false
-        end
     end
 end
 
@@ -215,19 +213,8 @@ end
 -- StartCast - begin showing a normal cast
 ----------------------------------------------------------------------
 StartCast = function(bar)
-    local name, _, texture, startTimeMS, endTimeMS, _, _, notInterruptible, spellID
-    if bar.unit == "player" then
-        local info = UnitCastingInfo("player")
-        if not info then
-            bar.casting = false
-            return
-        end
-        name, _, texture, startTimeMS, endTimeMS, _, _, notInterruptible, spellID =
-            UnitCastingInfo(bar.unit)
-    else
-        name, _, texture, startTimeMS, endTimeMS, _, _, notInterruptible, spellID =
-            UnitCastingInfo(bar.unit)
-    end
+    local name, _, texture, startTimeMS, endTimeMS, _, _, notInterruptible =
+        UnitCastingInfo(bar.unit)
 
     if not name then
         bar.casting = false

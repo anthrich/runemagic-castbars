@@ -1,6 +1,6 @@
-## Interface: 110100
+## Interface: 11507
 ## Title: RuneMagic Castbars
-## Notes: A clean, customizable castbar replacement.
+## Notes: A clean, customizable castbar replacement for Classic.
 ## Author: RuneMagic
 ## Version: 1.0.0
 ## SavedVariables: RuneMagicCastbarsDB

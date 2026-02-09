@@ -90,14 +90,10 @@ initFrame:SetScript("OnEvent", function(self, event, loadedAddon)
     end
     NS.db = RuneMagicCastbarsDB
 
-    -- Hide the default Blizzard cast bars
-    if PlayerCastingBarFrame then
-        PlayerCastingBarFrame:UnregisterAllEvents()
-        PlayerCastingBarFrame:Hide()
-    end
-    if PetCastingBarFrame then
-        PetCastingBarFrame:UnregisterAllEvents()
-        PetCastingBarFrame:Hide()
+    -- Hide the default Blizzard cast bars (Classic frame names)
+    if CastingBarFrame then
+        CastingBarFrame:UnregisterAllEvents()
+        CastingBarFrame:Hide()
     end
     if TargetFrameSpellBar then
         TargetFrameSpellBar:UnregisterAllEvents()

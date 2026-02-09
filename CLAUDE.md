@@ -2,12 +2,17 @@
 
 ## Project Overview
 
-A World of Warcraft addon that replaces the default Blizzard castbars with clean, customizable alternatives for both the player and target units.
+A World of Warcraft **Classic Era** addon that replaces the default Blizzard castbars with clean, customizable alternatives for both the player and target units.
+
+## Target Client
+
+- **Classic Era (Vanilla 1.15.x)** — Interface `11507`
+- Not compatible with Retail, Classic Cata, or other flavors without TOC and API changes.
 
 ## File Structure
 
 ```
-RuneMagicCastbars.toc   -- Addon metadata and load order (Interface 11.1.0 / Retail)
+RuneMagicCastbars.toc   -- Addon metadata and load order (Interface 11507 / Classic Era)
 Core.lua                -- Initialization, saved variables, slash commands, Blizzard bar suppression
 CastBar.lua             -- Castbar frame creation, event handling, and animation
 Config.lua              -- Settings re-application on reload; future options panel
@@ -22,15 +27,20 @@ Config.lua              -- Settings re-application on reload; future options pan
 ## Key Conventions
 
 - **Lua version:** WoW uses Lua 5.1. Do not use features from later Lua versions (e.g., `goto`, integer division `//`, bitwise operators).
-- **API surface:** Use the Blizzard WoW API (`CreateFrame`, `UnitCastingInfo`, `UnitChannelInfo`, etc.). Do not assume libraries like LibStub or Ace3 are present unless explicitly added.
+- **Classic API only:** Use the Classic Era Blizzard API. Key differences from Retail:
+  - `CastingBarFrame` (not `PlayerCastingBarFrame`)
+  - `SetBackdrop` is a native frame method — do NOT use `BackdropTemplate` (that is Retail 9.0+)
+  - `UNIT_SPELLCAST_INTERRUPTIBLE` / `UNIT_SPELLCAST_NOT_INTERRUPTIBLE` events do not exist
+  - No `focus` unit — only `player`, `target`, `pet`, `party1-4`, `raid1-40`
 - **No external dependencies.** The addon is self-contained.
 - **Local everything:** Prefer `local` variables and functions. Only expose things through the shared `NS` table or when the WoW API requires a global (like `SlashCmdList`).
 - **Indentation:** 4 spaces, no tabs.
 - **String style:** Double quotes for WoW paths/textures (`"Interface\\..."`), double quotes elsewhere for consistency.
+- **Frames:** Build UI via `CreateFrame` + Lua. Use `CreateTexture`/`CreateFontString` for backgrounds and borders rather than backdrop mixins.
 
 ## How the Castbar Works
 
-1. On `ADDON_LOADED`, the default Blizzard cast bars are hidden by unregistering their events.
+1. On `ADDON_LOADED`, the default Blizzard cast bars (`CastingBarFrame`, `TargetFrameSpellBar`) are hidden by unregistering their events.
 2. Two `StatusBar` frames are created — one for `"player"`, one for `"target"`.
 3. Spell cast events (`UNIT_SPELLCAST_START`, `_CHANNEL_START`, `_STOP`, `_INTERRUPTED`, etc.) drive state transitions (`bar.casting`, `bar.channeling`).
 4. An `OnUpdate` script animates the bar fill each frame based on `GetTime()` relative to `startTime`/`endTime`.
@@ -51,14 +61,14 @@ Config.lua              -- Settings re-application on reload; future options pan
 
 There is no automated test harness — WoW addons run inside the game client. To test:
 
-1. Copy (or symlink) the `runemagic-castbars` folder into your WoW `Interface/AddOns/` directory, renamed to `RuneMagicCastbars`.
-2. Launch WoW, enable the addon in the character select screen.
+1. Copy (or symlink) the `runemagic-castbars` folder into your WoW Classic `_classic_era_/Interface/AddOns/` directory, renamed to `RuneMagicCastbars`.
+2. Launch WoW Classic Era, enable the addon in the character select screen.
 3. Use `/rmcb test` to visually verify the player castbar.
 4. Cast a spell and confirm the bar animates correctly.
 5. Target a casting mob and confirm the target bar appears.
 
 ## Extending the Addon
 
-- **New bar types** (focus, pet): call `NS.CreateCastBar("focus", cfgTable)` and register appropriate events.
+- **New bar types** (pet, party): call `NS.CreateCastBar("pet", cfgTable)` and register appropriate events. Note: Classic Era has no `focus` unit.
 - **Options panel:** Build an `InterfaceOptions` frame in `Config.lua` that reads/writes `NS.db`.
 - **Textures/media:** Add files under a `Media/` directory and reference them with `"Interface\\AddOns\\RuneMagicCastbars\\Media\\<file>"`.

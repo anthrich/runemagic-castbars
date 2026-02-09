@@ -6,5 +6,6 @@
 ## SavedVariables: RuneMagicCastbarsDB
 
 Core.lua
+RuneShapes.lua
 CastBar.lua
 Config.lua

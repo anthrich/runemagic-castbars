@@ -1,4 +1,4 @@
-## Interface: 11507
+## Interface: 11507, 20504
 ## Title: RuneMagic Castbars
 ## Notes: A clean, customizable castbar replacement for Classic.
 ## Author: RuneMagic

@@ -44,40 +44,40 @@ function NS.CreateCastBar(unit, cfg)
     bar:SetSize(cfg.width, cfg.height)
     bar:SetPoint(cfg.point, UIParent, cfg.point, cfg.x, cfg.y)
 
-    -- Stone background
-    bar.bg = bar:CreateTexture(nil, "BACKGROUND")
-    bar.bg:SetAllPoints()
-    if NS.stoneBgTexture then
-        bar.bg:SetTexture(NS.stoneBgTexture)
-    else
-        bar.bg:SetColorTexture(0.12, 0.12, 0.12, 0.9)
-    end
+    -- Load the rune texture path
+    local runeIndex = cfg.runeIndex or NS.defaultRuneIndex
+    local runeData = NS.RuneShapes[runeIndex]
+    local runeTexPath = runeData and runeData.texture
 
-    -- Rune glyph texture (anchored left, width controlled by progress)
+    -- Bottom layer: dim rune outline (shows full shape as "unfilled")
+    bar.runeBg = bar:CreateTexture(nil, "BACKGROUND")
+    bar.runeBg:SetAllPoints()
+    if runeTexPath then
+        bar.runeBg:SetTexture(runeTexPath)
+    end
+    bar.runeBg:SetVertexColor(0.2, 0.2, 0.2, 0.6)
+
+    -- Top layer: bright rune (cropped left-to-right to show progress)
     bar.rune = bar:CreateTexture(nil, "ARTWORK")
     bar.rune:SetPoint("LEFT", bar, "LEFT", 0, 0)
     bar.rune:SetSize(cfg.width, cfg.height)
-
-    -- Load the rune texture
-    local runeIndex = cfg.runeIndex or NS.defaultRuneIndex
-    local runeData = NS.RuneShapes[runeIndex]
-    if runeData then
-        bar.rune:SetTexture(runeData.texture)
+    if runeTexPath then
+        bar.rune:SetTexture(runeTexPath)
     end
     bar.rune:SetTexCoord(0, 0, 0, 1)  -- start hidden
     bar.rune:SetWidth(0)
 
-    -- Spell name text
+    -- Spell name text (below the rune)
     bar.text = bar:CreateFontString(nil, "OVERLAY")
     bar.text:SetFont(cfg.font, cfg.fontSize, "OUTLINE")
-    bar.text:SetPoint("LEFT", bar, "LEFT", 4, 0)
+    bar.text:SetPoint("TOPLEFT", bar, "BOTTOMLEFT", 0, -2)
     bar.text:SetJustifyH("LEFT")
     bar.text:SetTextColor(1, 1, 1, 1)
 
-    -- Timer text
+    -- Timer text (below the rune, right side)
     bar.timer = bar:CreateFontString(nil, "OVERLAY")
     bar.timer:SetFont(cfg.font, cfg.fontSize, "OUTLINE")
-    bar.timer:SetPoint("RIGHT", bar, "RIGHT", -4, 0)
+    bar.timer:SetPoint("TOPRIGHT", bar, "BOTTOMRIGHT", 0, -2)
     bar.timer:SetJustifyH("RIGHT")
     bar.timer:SetTextColor(1, 1, 1, 1)
     if not cfg.showTimer then bar.timer:Hide() end
@@ -139,16 +139,17 @@ function NS.ApplySettings(bar, cfg)
     bar:ClearAllPoints()
     bar:SetPoint(cfg.point, UIParent, cfg.point, cfg.x, cfg.y)
 
-    if bar.bg and NS.stoneBgTexture then
-        bar.bg:SetTexture(NS.stoneBgTexture)
-    end
-
-    -- Update rune texture if index changed
+    -- Update rune textures if index changed
     local runeIndex = cfg.runeIndex or NS.defaultRuneIndex
     local runeData = NS.RuneShapes[runeIndex]
-    if runeData and bar.rune then
-        bar.rune:SetTexture(runeData.texture)
-        bar.rune:SetSize(cfg.width, cfg.height)
+    if runeData then
+        if bar.runeBg then
+            bar.runeBg:SetTexture(runeData.texture)
+        end
+        if bar.rune then
+            bar.rune:SetTexture(runeData.texture)
+            bar.rune:SetSize(cfg.width, cfg.height)
+        end
     end
 end
 

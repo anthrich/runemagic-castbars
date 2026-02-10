@@ -16,10 +16,13 @@ local OnUpdate, OnEvent, StartCast, StartChannel, StopCast, FinishCast
 local InterruptCast, BuildSegments, UpdateSegments, SetAllSegmentsColor
 
 ----------------------------------------------------------------------
--- BuildSegments(bar) - create rotated texture lines for each path seg
+-- BuildSegments(bar) - subdivide each path segment into small chunks
+-- so the fill travels smoothly within each stroke.
 ----------------------------------------------------------------------
+local CHUNK_PX = 6  -- approximate pixel length per sub-segment
+
 BuildSegments = function(bar)
-    -- Clean up old segments
+    -- Clean up old chunks
     if bar.segs then
         for _, s in ipairs(bar.segs) do
             s.tex:Hide()
@@ -34,85 +37,86 @@ BuildSegments = function(bar)
     local w, h = bar.cfg.width, bar.cfg.height
     local thick = bar.cfg.strokeThickness or 5
 
-    -- Calculate total path length for proportional progress
+    -- First pass: calculate total path length
     local totalLen = 0
-    local segLengths = {}
+    local pathSegLens = {}
     for i, seg in ipairs(runeData.path) do
         local dx = (seg[3] - seg[1]) * w
         local dy = (seg[4] - seg[2]) * h
-        local len = math_sqrt(dx * dx + dy * dy)
-        segLengths[i] = len
-        totalLen = totalLen + len
+        pathSegLens[i] = math_sqrt(dx * dx + dy * dy)
+        totalLen = totalLen + pathSegLens[i]
     end
     bar.totalLen = totalLen
+    if totalLen < 1 then return end
 
-    -- Build segment textures
+    -- Second pass: subdivide each path segment into chunks
     local cumLen = 0
     for i, seg in ipairs(runeData.path) do
         local px1 = seg[1] * w
-        local py1 = (1 - seg[2]) * h  -- flip y for WoW coords
+        local py1 = (1 - seg[2]) * h
         local px2 = seg[3] * w
         local py2 = (1 - seg[4]) * h
 
-        local dx = px2 - px1
-        local dy = py2 - py1
-        local len = segLengths[i]
-        if len < 1 then len = 1 end
+        local segLen = pathSegLens[i]
+        if segLen < 1 then segLen = 1 end
 
-        local angle = math_atan2(dy, dx)
-        local mx = (px1 + px2) / 2
-        local my = (py1 + py2) / 2
+        local numChunks = math_max(1, math.floor(segLen / CHUNK_PX + 0.5))
+        local chunkLen = segLen / numChunks
 
-        local tex = bar.canvas:CreateTexture(nil, "ARTWORK")
-        tex:SetColorTexture(1, 1, 1, 1)
-        tex:SetSize(len, thick)
-        tex:SetPoint("CENTER", bar.canvas, "BOTTOMLEFT", mx, my)
-        tex:SetRotation(-angle)
+        local dx = (px2 - px1) / numChunks
+        local dy = (py2 - py1) / numChunks
+        local angle = math_atan2(py2 - py1, px2 - px1)
 
-        -- Start dim
-        local dc = bar.cfg.dimColor or { r = 0.15, g = 0.15, b = 0.15 }
-        tex:SetVertexColor(dc.r, dc.g, dc.b, 0.5)
+        for j = 0, numChunks - 1 do
+            local cx = px1 + dx * (j + 0.5)
+            local cy = py1 + dy * (j + 0.5)
 
-        -- Progress thresholds for this segment
-        local startProg = cumLen / totalLen
-        cumLen = cumLen + segLengths[i]
-        local endProg = cumLen / totalLen
+            local tex = bar.canvas:CreateTexture(nil, "ARTWORK")
+            tex:SetColorTexture(1, 1, 1, 1)
+            -- Slightly overlap chunks to avoid gaps at joints
+            tex:SetSize(chunkLen + 1, thick)
+            tex:SetPoint("CENTER", bar.canvas, "BOTTOMLEFT", cx, cy)
+            tex:SetRotation(-angle)
 
-        bar.segs[i] = {
-            tex = tex,
-            startProg = startProg,
-            endProg = endProg,
-            lit = false,
-        }
+            local startProg = cumLen / totalLen
+            cumLen = cumLen + chunkLen
+            local endProg = cumLen / totalLen
+
+            local dc = bar.cfg.dimColor or { r = 0.15, g = 0.15, b = 0.15 }
+            tex:SetVertexColor(dc.r, dc.g, dc.b, 0.5)
+
+            bar.segs[#bar.segs + 1] = {
+                tex = tex,
+                startProg = startProg,
+                endProg = endProg,
+            }
+        end
     end
 end
 
 ----------------------------------------------------------------------
--- UpdateSegments(bar, progress, color) - glow wave along path
--- Segments behind progress are lit. The leading segment glows brighter.
+-- UpdateSegments(bar, progress) - glow wave along path
+-- Chunks behind progress are lit. The leading chunk glows brighter.
 ----------------------------------------------------------------------
 UpdateSegments = function(bar, progress)
     if not bar.segs then return end
     local c = bar.cfg.barColor
     local dc = bar.cfg.dimColor or { r = 0.15, g = 0.15, b = 0.15 }
-    local glowMul = 1.4  -- leading edge brightness multiplier
+    local glowMul = 1.5
 
-    for i, s in ipairs(bar.segs) do
+    for _, s in ipairs(bar.segs) do
         if progress >= s.endProg then
-            -- Fully revealed: lit color
+            -- Fully past: lit
             s.tex:SetVertexColor(c.r, c.g, c.b, c.a)
-            s.lit = true
-        elseif progress >= s.startProg then
-            -- Leading segment: extra bright glow
+        elseif progress > s.startProg then
+            -- Leading chunk: bright glow
             local gr = math_min(1.0, c.r * glowMul)
             local gg = math_min(1.0, c.g * glowMul)
             local gb = math_min(1.0, c.b * glowMul)
             s.tex:SetVertexColor(gr, gg, gb, 1.0)
-            s.lit = true
         else
-            -- Not yet reached: dim
+            -- Not reached: dim
             s.tex:SetVertexColor(dc.r, dc.g, dc.b, 0.5)
-            s.lit = false
         end
     end
 end
@@ -124,19 +128,17 @@ SetAllSegmentsColor = function(bar, r, g, b, a)
     if not bar.segs then return end
     for _, s in ipairs(bar.segs) do
         s.tex:SetVertexColor(r, g, b, a or 1)
-        s.lit = true
     end
 end
 
 ----------------------------------------------------------------------
--- ResetSegmentsDim(bar) - set all segments to dim
+-- ResetSegmentsDim(bar) - set all chunks to dim
 ----------------------------------------------------------------------
 local function ResetSegmentsDim(bar)
     if not bar.segs then return end
     local dc = bar.cfg.dimColor or { r = 0.15, g = 0.15, b = 0.15 }
     for _, s in ipairs(bar.segs) do
         s.tex:SetVertexColor(dc.r, dc.g, dc.b, 0.5)
-        s.lit = false
     end
 end
 

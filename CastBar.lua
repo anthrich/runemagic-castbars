@@ -1,33 +1,143 @@
 ----------------------------------------------------------------------
 -- RuneMagic Castbars - CastBar
--- Rune-shaped castbar using TGA textures. Cast progress is shown
--- by cropping the texture left-to-right via SetTexCoord.
+-- Rune-shaped castbar with segment glow wave animation.
+-- The full rune is always visible (dim). A glow wave travels along
+-- the path, leaving lit segments behind as the cast progresses.
 ----------------------------------------------------------------------
 
 local AddonName, NS = ...
 
+local math_sqrt = math.sqrt
+local math_atan2 = math.atan2
+local math_min = math.min
+local math_max = math.max
+
 local OnUpdate, OnEvent, StartCast, StartChannel, StopCast, FinishCast
-local InterruptCast, SetRuneProgress, SetRuneColor
+local InterruptCast, BuildSegments, UpdateSegments, SetAllSegmentsColor
 
 ----------------------------------------------------------------------
--- SetRuneProgress(bar, progress) - reveal rune from 0 to progress
--- For a normal cast progress goes 0 -> 1 (left to right).
--- For a channel progress goes 1 -> 0 (right to left disappearing).
+-- BuildSegments(bar) - create rotated texture lines for each path seg
 ----------------------------------------------------------------------
-SetRuneProgress = function(bar, progress)
-    if progress < 0 then progress = 0 end
-    if progress > 1 then progress = 1 end
+BuildSegments = function(bar)
+    -- Clean up old segments
+    if bar.segs then
+        for _, s in ipairs(bar.segs) do
+            s.tex:Hide()
+        end
+    end
+    bar.segs = {}
 
-    -- Crop the texture to show only the left 'progress' portion
-    bar.rune:SetTexCoord(0, progress, 0, 1)
-    bar.rune:SetWidth(bar.cfg.width * progress)
+    local runeIndex = bar.cfg.runeIndex or NS.defaultRuneIndex
+    local runeData = NS.RuneShapes[runeIndex]
+    if not runeData or not runeData.path then return end
+
+    local w, h = bar.cfg.width, bar.cfg.height
+    local thick = bar.cfg.strokeThickness or 5
+
+    -- Calculate total path length for proportional progress
+    local totalLen = 0
+    local segLengths = {}
+    for i, seg in ipairs(runeData.path) do
+        local dx = (seg[3] - seg[1]) * w
+        local dy = (seg[4] - seg[2]) * h
+        local len = math_sqrt(dx * dx + dy * dy)
+        segLengths[i] = len
+        totalLen = totalLen + len
+    end
+    bar.totalLen = totalLen
+
+    -- Build segment textures
+    local cumLen = 0
+    for i, seg in ipairs(runeData.path) do
+        local px1 = seg[1] * w
+        local py1 = (1 - seg[2]) * h  -- flip y for WoW coords
+        local px2 = seg[3] * w
+        local py2 = (1 - seg[4]) * h
+
+        local dx = px2 - px1
+        local dy = py2 - py1
+        local len = segLengths[i]
+        if len < 1 then len = 1 end
+
+        local angle = math_atan2(dy, dx)
+        local mx = (px1 + px2) / 2
+        local my = (py1 + py2) / 2
+
+        local tex = bar.canvas:CreateTexture(nil, "ARTWORK")
+        tex:SetColorTexture(1, 1, 1, 1)
+        tex:SetSize(len, thick)
+        tex:SetPoint("CENTER", bar.canvas, "BOTTOMLEFT", mx, my)
+        tex:SetRotation(-angle)
+
+        -- Start dim
+        local dc = bar.cfg.dimColor or { r = 0.15, g = 0.15, b = 0.15 }
+        tex:SetVertexColor(dc.r, dc.g, dc.b, 0.5)
+
+        -- Progress thresholds for this segment
+        local startProg = cumLen / totalLen
+        cumLen = cumLen + segLengths[i]
+        local endProg = cumLen / totalLen
+
+        bar.segs[i] = {
+            tex = tex,
+            startProg = startProg,
+            endProg = endProg,
+            lit = false,
+        }
+    end
 end
 
 ----------------------------------------------------------------------
--- SetRuneColor(bar, r, g, b, a)
+-- UpdateSegments(bar, progress, color) - glow wave along path
+-- Segments behind progress are lit. The leading segment glows brighter.
 ----------------------------------------------------------------------
-SetRuneColor = function(bar, r, g, b, a)
-    bar.rune:SetVertexColor(r, g, b, a or 1)
+UpdateSegments = function(bar, progress)
+    if not bar.segs then return end
+    local c = bar.cfg.barColor
+    local dc = bar.cfg.dimColor or { r = 0.15, g = 0.15, b = 0.15 }
+    local glowMul = 1.4  -- leading edge brightness multiplier
+
+    for i, s in ipairs(bar.segs) do
+        if progress >= s.endProg then
+            -- Fully revealed: lit color
+            s.tex:SetVertexColor(c.r, c.g, c.b, c.a)
+            s.lit = true
+        elseif progress >= s.startProg then
+            -- Leading segment: extra bright glow
+            local gr = math_min(1.0, c.r * glowMul)
+            local gg = math_min(1.0, c.g * glowMul)
+            local gb = math_min(1.0, c.b * glowMul)
+            s.tex:SetVertexColor(gr, gg, gb, 1.0)
+            s.lit = true
+        else
+            -- Not yet reached: dim
+            s.tex:SetVertexColor(dc.r, dc.g, dc.b, 0.5)
+            s.lit = false
+        end
+    end
+end
+
+----------------------------------------------------------------------
+-- SetAllSegmentsColor(bar, r, g, b, a) - override all segment colors
+----------------------------------------------------------------------
+SetAllSegmentsColor = function(bar, r, g, b, a)
+    if not bar.segs then return end
+    for _, s in ipairs(bar.segs) do
+        s.tex:SetVertexColor(r, g, b, a or 1)
+        s.lit = true
+    end
+end
+
+----------------------------------------------------------------------
+-- ResetSegmentsDim(bar) - set all segments to dim
+----------------------------------------------------------------------
+local function ResetSegmentsDim(bar)
+    if not bar.segs then return end
+    local dc = bar.cfg.dimColor or { r = 0.15, g = 0.15, b = 0.15 }
+    for _, s in ipairs(bar.segs) do
+        s.tex:SetVertexColor(dc.r, dc.g, dc.b, 0.5)
+        s.lit = false
+    end
 end
 
 ----------------------------------------------------------------------
@@ -44,28 +154,12 @@ function NS.CreateCastBar(unit, cfg)
     bar:SetSize(cfg.width, cfg.height)
     bar:SetPoint(cfg.point, UIParent, cfg.point, cfg.x, cfg.y)
 
-    -- Load the rune texture path
-    local runeIndex = cfg.runeIndex or NS.defaultRuneIndex
-    local runeData = NS.RuneShapes[runeIndex]
-    local runeTexPath = runeData and runeData.texture
+    -- Canvas for segment textures
+    bar.canvas = CreateFrame("Frame", nil, bar)
+    bar.canvas:SetAllPoints()
 
-    -- Bottom layer: dim rune outline (shows full shape as "unfilled")
-    bar.runeBg = bar:CreateTexture(nil, "BACKGROUND")
-    bar.runeBg:SetAllPoints()
-    if runeTexPath then
-        bar.runeBg:SetTexture(runeTexPath)
-    end
-    bar.runeBg:SetVertexColor(0.2, 0.2, 0.2, 0.6)
-
-    -- Top layer: bright rune (cropped left-to-right to show progress)
-    bar.rune = bar:CreateTexture(nil, "ARTWORK")
-    bar.rune:SetPoint("LEFT", bar, "LEFT", 0, 0)
-    bar.rune:SetSize(cfg.width, cfg.height)
-    if runeTexPath then
-        bar.rune:SetTexture(runeTexPath)
-    end
-    bar.rune:SetTexCoord(0, 0, 0, 1)  -- start hidden
-    bar.rune:SetWidth(0)
+    -- Build path segment textures
+    BuildSegments(bar)
 
     -- Spell name text (below the rune)
     bar.text = bar:CreateFontString(nil, "OVERLAY")
@@ -139,18 +233,7 @@ function NS.ApplySettings(bar, cfg)
     bar:ClearAllPoints()
     bar:SetPoint(cfg.point, UIParent, cfg.point, cfg.x, cfg.y)
 
-    -- Update rune textures if index changed
-    local runeIndex = cfg.runeIndex or NS.defaultRuneIndex
-    local runeData = NS.RuneShapes[runeIndex]
-    if runeData then
-        if bar.runeBg then
-            bar.runeBg:SetTexture(runeData.texture)
-        end
-        if bar.rune then
-            bar.rune:SetTexture(runeData.texture)
-            bar.rune:SetSize(cfg.width, cfg.height)
-        end
-    end
+    BuildSegments(bar)
 end
 
 ----------------------------------------------------------------------
@@ -174,9 +257,7 @@ function NS.TestCastBar(bar)
     bar.timer:SetText("3.0")
     bar.icon:SetTexture("Interface\\Icons\\Spell_Nature_Healing")
 
-    local c = bar.cfg.barColor
-    SetRuneColor(bar, c.r, c.g, c.b, c.a)
-    SetRuneProgress(bar, 0)
+    ResetSegmentsDim(bar)
     bar:SetAlpha(1)
     bar:Show()
 end
@@ -237,9 +318,7 @@ StartCast = function(bar)
     bar.text:SetText(name)
     if texture then bar.icon:SetTexture(texture) end
 
-    local c = bar.cfg.barColor
-    SetRuneColor(bar, c.r, c.g, c.b, c.a)
-    SetRuneProgress(bar, 0)
+    ResetSegmentsDim(bar)
     bar:SetAlpha(1)
     bar:Show()
 end
@@ -264,9 +343,8 @@ StartChannel = function(bar)
     bar.text:SetText(name)
     if texture then bar.icon:SetTexture(texture) end
 
-    local c = bar.cfg.barColor
-    SetRuneColor(bar, c.r, c.g, c.b, c.a)
-    SetRuneProgress(bar, 1)
+    -- Channels start fully lit
+    UpdateSegments(bar, 1)
     bar:SetAlpha(1)
     bar:Show()
 end
@@ -285,8 +363,7 @@ end
 ----------------------------------------------------------------------
 FinishCast = function(bar)
     bar.casting = false
-    SetRuneProgress(bar, 1)
-    SetRuneColor(bar, 0.0, 1.0, 0.0, 1.0)
+    SetAllSegmentsColor(bar, 0.0, 1.0, 0.0, 1.0)
     bar.holdTime = GetTime() + 0.5
 end
 
@@ -298,14 +375,13 @@ InterruptCast = function(bar)
     bar.channeling = false
 
     local c = bar.cfg.interruptedColor
-    SetRuneColor(bar, c.r, c.g, c.b, c.a)
-    SetRuneProgress(bar, 1)
+    SetAllSegmentsColor(bar, c.r, c.g, c.b, c.a)
     bar.text:SetText("Interrupted")
     bar.holdTime = GetTime() + 0.8
 end
 
 ----------------------------------------------------------------------
--- OnUpdate - animate rune reveal based on cast progress
+-- OnUpdate - glow wave along path based on cast progress
 ----------------------------------------------------------------------
 OnUpdate = function(bar, elapsed)
     local now = GetTime()
@@ -329,7 +405,7 @@ OnUpdate = function(bar, elapsed)
             return
         end
 
-        SetRuneProgress(bar, progress)
+        UpdateSegments(bar, progress)
 
         if bar.cfg.showTimer then
             bar.timer:SetFormattedText("%.1f", bar.endTime - now)
@@ -345,7 +421,7 @@ OnUpdate = function(bar, elapsed)
             return
         end
 
-        SetRuneProgress(bar, progress)
+        UpdateSegments(bar, progress)
 
         if bar.cfg.showTimer then
             bar.timer:SetFormattedText("%.1f", bar.endTime - now)
